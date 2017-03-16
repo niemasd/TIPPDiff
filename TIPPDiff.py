@@ -11,15 +11,13 @@ from random import choice
 from scipy.stats import expon
 from statistics import variance
 
-# constants
-BOOT  = 100  # number of bootstrap iterations
-ALPHA = 0.05 # p-value significance threshold (after FDR correction)
-
 # parse user arguments
 def parseArgs():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-f1', '--tipp_placement_file1',  required=True, type=argparse.FileType('r'), default=None, help="TIPP Output Placement File 1")
-    parser.add_argument('-f2', '--tipp_placement_file2',  required=True, type=argparse.FileType('r'), default=None, help="TIPP Output Placement File 2")
+    parser.add_argument('-f1', '--tipp_placement_file1', required=True,  type=argparse.FileType('r'), default=None, help="TIPP Output Placement File 1")
+    parser.add_argument('-f2', '--tipp_placement_file2', required=True,  type=argparse.FileType('r'), default=None, help="TIPP Output Placement File 2")
+    parser.add_argument('-b',  '--bootstrap_replicates', required=False, type=int,                    default=100,  help="Number of Bootstrap replicates")
+    parser.add_argument('-a',  '--alpha_threshold',      required=False, type=float,                  default=0.05, help="Significance p-value Threshold (alpha)")
     args = parser.parse_args()
     return args
 
@@ -95,6 +93,10 @@ def TIPPDiff(tree, placements1, placements2, field2num):
 # run TIPPDiff
 if __name__== "__main__":
     args = parseArgs()
+    global BOOT
+    BOOT = args.bootstrap_replicates
+    global ALPHA
+    ALPHA = args.alpha_threshold
     tippout1 = eval(args.tipp_placement_file1.read())
     tippout2 = eval(args.tipp_placement_file2.read())
     tree = dendropy.Tree.get(data=tippout1['tree'].replace('[','{').replace(']','}'), schema='newick', is_parse_jplace_tokens=True)
