@@ -7,8 +7,9 @@ The two trees MUST be identical
 '''
 import argparse,dendropy
 from decimal import Decimal
+from math import sqrt
 from random import choice
-from scipy.stats import expon
+from scipy.stats import expon,gamma
 from statistics import variance
 
 # parse user arguments
@@ -18,7 +19,11 @@ def parseArgs():
     parser.add_argument('-f2', '--tipp_placement_file2', required=True,  type=argparse.FileType('r'), default=None, help="TIPP Output Placement File 2")
     parser.add_argument('-b',  '--bootstrap_replicates', required=False, type=int,                    default=100,  help="Number of Bootstrap replicates")
     parser.add_argument('-a',  '--alpha_threshold',      required=False, type=float,                  default=0.05, help="Significance p-value Threshold (alpha)")
+    parser.add_argument('-m',  '--approach',             required=False, type=int,                    default=2,    help="Differential Profile Test Approach (1-2)")
     args = parser.parse_args()
+    if args.approach not in {1,2}:
+        print("ERROR: Approach (-m or --approach) must be 1 or 2")
+        exit(-1)
     return args
 
 # compute read proportions for all edges
@@ -37,7 +42,7 @@ def readProp(reads, pseudo, tree):
     return prop
 
 # TIPPDiff: Perform differential microbiome profile analysis
-def TIPPDiff(tree, placements1, placements2, field2num):
+def TIPPDiff(tree, placements1, placements2, field2num, approach):
     # preprocess placements
     edges = tree.edge_index
     for i in range(len(edges)):
@@ -63,7 +68,7 @@ def TIPPDiff(tree, placements1, placements2, field2num):
     PSEUDO = Decimal(1.)/Decimal(len(edges))
     x = readProp(reads1, PSEUDO, tree)
     y = readProp(reads2, PSEUDO, tree)
-    s = {e:abs(x[e].ln()-y[e].ln()) for e in x} # assuming ln(x/y) ~ Laplace(0,b), so |ln(x/y)| ~ Exponential(1/b)
+    s = {e:abs(x[e].ln()-y[e].ln()) for e in x} # assuming x=y~Beta(a,1) -> -ln(x)=-ln(y)~Exponential(a) -> ln(x/y)=ln(x)-ln(y)~Laplace(0,1/b), so |ln(x/y)|~Exponential(a)
 
     # estimate each edge's |X-Y| variance using bootstrapping
     var = {e:[s[e]] for e in s}
@@ -76,19 +81,38 @@ def TIPPDiff(tree, placements1, placements2, field2num):
         var[e] = variance(var[e])
     
     # perform hypothesis test on each edge (with correction)
-    p = [] # elements are (edge_num, p, significant) tuples
+    tests = [] # elements are (edge_num, p, significant) tuples
     significant = False
     for e in var:
         if var[e] == Decimal(0.):
-            p.append((e.edge_num, 1, False))
+            tests.append((e.edge_num, 0, 0, 1, False))
         else:
             currP = expon.sf(float(s[e]), scale=float(var[e].sqrt()))
             sig = False
-            if currP <= ALPHA/len(var): # bonferroni correction
+            if currP <= ALPHA/len(var) and currP > 0.: # bonferroni correction and account for statistical artifact p=0
                 sig = True
+            tests.append((e.edge_num, s[e], var[e], currP, sig))
+
+    # approach 1: any success is overall success
+    if approach == 1:
+        for edge,score,v,p,sig in tests:
+            if sig:
                 significant = True
-            p.append((e.edge_num, currP, sig))
-    return significant, p
+                break
+
+    # approach 2: sum multiple exponentials and test on that
+    elif approach == 2:
+        score_tot = sum([score for edge,score,v,p,sig in tests if p > 0.]) # ignore statistical artifacts
+        sigmas = [sqrt(v) for edge,score,v,p,sig in tests if p > 0.]
+        sum_sigmas = sum(sigmas)
+        sum_sig_squareds = float(sum([v for edge,score,v,p,sig in tests if p > 0.]))
+        k_T = (sum_sigmas**2)/sum_sig_squareds
+        theta_T = sum_sig_squareds/sum_sigmas
+        currP = gamma.sf(float(score_tot), k_T, scale=theta_T)
+        if currP <= ALPHA:
+            significant = True
+        tests.append((None, score_tot, (k_T,theta_T), currP, significant))
+    return significant, tests
 
 # run TIPPDiff
 if __name__== "__main__":
@@ -106,8 +130,10 @@ if __name__== "__main__":
         field2num[fields[i]] = i
     placements1 = tippout1['placements']
     placements2 = tippout2['placements']
-    sig,p = TIPPDiff(tree, placements1, placements2, field2num)
+    sig,tests = TIPPDiff(tree, placements1, placements2, field2num, args.approach)
     if sig:
         print("The two samples are significantly different")
     else:
         print("The two samples are not significantly different")
+    for test in tests:
+        print(test)
