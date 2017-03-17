@@ -19,9 +19,9 @@ def parseArgs():
     parser.add_argument('-f2', '--tipp_placement_file2', required=True,  type=argparse.FileType('r'), default=None, help="TIPP Output Placement File 2")
     parser.add_argument('-b',  '--bootstrap_replicates', required=False, type=int,                    default=100,  help="Number of Bootstrap replicates")
     parser.add_argument('-a',  '--alpha_threshold',      required=False, type=float,                  default=0.05, help="Significance p-value Threshold (alpha)")
-    parser.add_argument('-m',  '--approach',             required=False, type=int,                    default=2,    help="Differential Profile Test Approach (1-2)")
+    parser.add_argument('-m',  '--approach',             required=False, type=int,                    default=3,    help="Differential Profile Test Approach (1-3)")
     args = parser.parse_args()
-    if args.approach not in {1,2}:
+    if args.approach not in {1,2,3}:
         print("ERROR: Approach (-m or --approach) must be 1 or 2")
         exit(-1)
     return args
@@ -55,7 +55,6 @@ def TIPPDiff(tree, placements1, placements2, field2num, approach):
             edge = edges[p[field2num['edge_num']]]
             curr.add((edge, Decimal(p[field2num['like_weight_ratio']])))
         reads1.append(curr)
-    #from random import shuffle; shuffle(edges) # shuffle edges for testing
     reads2 = [] # each read is a set of (edge, like_weight_ratio) tuples
     for read in placements2:
         curr = set()
@@ -63,6 +62,13 @@ def TIPPDiff(tree, placements1, placements2, field2num, approach):
             edge = edges[p[field2num['edge_num']]]
             curr.add((edge, Decimal(p[field2num['like_weight_ratio']])))
         reads2.append(curr)
+
+    # keep track of leaf descendents (just in case)
+    for node in tree.postorder_node_iter():
+        if node.is_leaf():
+            node.edge.num_leaves = 1
+        else:
+            node.edge.num_leaves = sum([c.edge.num_leaves for c in node.child_node_iter()])
 
     # compute x, y, and score for all edges
     PSEUDO = Decimal(1.)/Decimal(len(edges))
@@ -85,13 +91,13 @@ def TIPPDiff(tree, placements1, placements2, field2num, approach):
     significant = False
     for e in var:
         if var[e] == Decimal(0.):
-            tests.append((e.edge_num, 0, 0, 1, False))
+            tests.append((e, 0, 0, 1, False))
         else:
             currP = expon.sf(float(s[e]), scale=float(var[e].sqrt()))
             sig = False
             if currP <= ALPHA/len(var) and currP > 0.: # bonferroni correction and account for statistical artifact p=0
                 sig = True
-            tests.append((e.edge_num, s[e], var[e], currP, sig))
+            tests.append((e, s[e], var[e], currP, sig))
 
     # approach 1: any success is overall success
     if approach == 1:
@@ -100,19 +106,26 @@ def TIPPDiff(tree, placements1, placements2, field2num, approach):
                 significant = True
                 break
 
-    # approach 2: sum multiple exponentials and test on that
-    elif approach == 2:
-        score_tot = sum([score for edge,score,v,p,sig in tests if p > 0.]) # ignore statistical artifacts
-        sigmas = [sqrt(v) for edge,score,v,p,sig in tests if p > 0.]
+    # approach 2-3: (weighted) sum multiple exponentials and test on that
+    elif approach in {2,3}:
+        if approach == 2:
+            score_tot = sum([score for edge,score,v,p,sig in tests if p > 0.]) # ignore statistical artifacts
+            sigmas = [sqrt(v) for edge,score,v,p,sig in tests if p > 0.]
+        elif approach == 3:
+            score_tot = sum([score*edge.num_leaves for edge,score,v,p,sig in tests if p > 0.])
+            sigmas = [sqrt(v)*edge.num_leaves for edge,score,v,p,sig in tests if p > 0.]
         sum_sigmas = sum(sigmas)
-        sum_sig_squareds = float(sum([v for edge,score,v,p,sig in tests if p > 0.]))
+        sum_sig_squareds = float(sum([sigma*sigma for sigma in sigmas]))
         k_T = (sum_sigmas**2)/sum_sig_squareds
         theta_T = sum_sig_squareds/sum_sigmas
         currP = gamma.sf(float(score_tot), k_T, scale=theta_T)
         if currP <= ALPHA:
             significant = True
         tests.append((None, score_tot, (k_T,theta_T), currP, significant))
-    return significant, tests
+
+    # convert edges to edge numbers and return
+    tree.seed_node.edge.edge_num = "SEED"
+    return significant, [(e.edge_num,score,v,p,sig) if e is not None else ("TOTAL",score,v,p,sig) for e,score,v,p,sig in tests]
 
 # run TIPPDiff
 if __name__== "__main__":
